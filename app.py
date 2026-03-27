@@ -1,7 +1,7 @@
 import streamlit as st
 import cv2
 import numpy as np
-import easyocr
+from paddleocr import PaddleOCR
 import re
 import requests
 import pandas as pd
@@ -204,7 +204,14 @@ def send_scan_alert(plate, info, source, blacklist_info=None):
 # ─────────────────────────────────────────────
 @st.cache_resource
 def load_ocr():
-    return easyocr.Reader(['en'], gpu=False)
+    return PaddleOCR(
+        use_angle_cls=True,
+        lang='en',
+        use_gpu=False,
+        show_log=False,
+        det_model_dir=None,
+        rec_model_dir=None,
+    )
 
 # ─────────────────────────────────────────────
 # PLATE UTILS
@@ -264,39 +271,33 @@ def detect_plates(image_bytes, reader):
         img_np = np.array(img)
         annotated = img_np.copy()
 
-        # Try 1: OCR on full image
-        ocr_result = reader.readtext(
-            img_np,
-            allowlist='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
-            batch_size=1,
-            workers=0,
-            paragraph=False,
-        )
-        for (bbox, text, conf) in ocr_result:
-            if conf < 0.15:
-                continue
-            plate = normalize_plate(text)
-            if validate_plate(plate):
-                pts = np.array(bbox, dtype=np.int32)
-                cv2.polylines(annotated, [pts], True, (0, 255, 80), 3)
-                x, y = pts[0]
-                cv2.putText(annotated, plate, (x, max(y-10, 10)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 80), 2)
-                results.append({"plate": plate, "confidence": conf})
+        # Run PaddleOCR
+        ocr_result = reader.ocr(img_np, cls=True)
 
-        # Try 2: preprocessed image if nothing found
-        if not results:
-            gray = preprocess_plate(img_np)
-            ocr_result2 = reader.readtext(
-                gray,
-                allowlist='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
-                batch_size=1,
-                workers=0,
-            )
-            for (bbox, text, conf) in ocr_result2:
+        if ocr_result and ocr_result[0]:
+            for line in ocr_result[0]:
+                bbox, (text, conf) = line
+                if conf < 0.15:
+                    continue
                 plate = normalize_plate(text)
                 if validate_plate(plate):
+                    pts = np.array(bbox, dtype=np.int32)
+                    cv2.polylines(annotated, [pts], True, (0, 255, 80), 3)
+                    x, y = pts[0]
+                    cv2.putText(annotated, plate, (int(x), max(int(y)-10, 10)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 80), 2)
                     results.append({"plate": plate, "confidence": conf})
+
+        # Try 2: preprocessed if nothing found
+        if not results:
+            gray = preprocess_plate(img_np)
+            ocr_result2 = reader.ocr(gray, cls=True)
+            if ocr_result2 and ocr_result2[0]:
+                for line in ocr_result2[0]:
+                    bbox, (text, conf) = line
+                    plate = normalize_plate(text)
+                    if validate_plate(plate):
+                        results.append({"plate": plate, "confidence": conf})
 
         # Deduplicate
         seen = set()
