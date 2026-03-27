@@ -1,0 +1,6 @@
+%%writefile /content/ANPR-Project/requirements.txt
+easyocr
+opencv-python-headless
+pillow
+numpy
+streamlit
